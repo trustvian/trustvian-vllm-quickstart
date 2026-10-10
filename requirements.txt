@@ -1,0 +1,11 @@
+# The agent (no framework — a plain tool-calling loop on the OpenAI SDK)
+openai>=1.50
+requests>=2.32
+
+# Instrumentation the harness (run.py) turns on. The agent itself imports none of it.
+opentelemetry-sdk>=1.30
+opentelemetry-exporter-otlp-proto-http>=1.30
+opentelemetry-instrumentation-requests>=0.51b0
+openinference-instrumentation-openai>=0.1.20
+
+# vLLM is NOT installed here: it runs on the GPU machine (see README step 0).
