@@ -1,0 +1,19 @@
+# Everything the demo generates. Running it must never dirty a tracked file.
+.demo/
+.runtime/
+.trustvian/
+
+# This workflow's scratch artifacts.
+.superpowers/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS
+.DS_Store
+
+# Local Compose overrides (copied from .env.example)
+.env
