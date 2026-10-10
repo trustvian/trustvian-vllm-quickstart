@@ -1,0 +1,152 @@
+# Trustvian + vLLM quick start, as a Compose stack.
+#
+#   control-plane   trustvian-local (SQLite in a named volume) + WebUI on
+#                   http://127.0.0.1:8080/
+#   crm             the fake CRM (mock_services.py)
+#   agent           one-shot: `trustvian dev` + the tool-calling agent, attached
+#                   to control-plane with --api-url. Used with `run`, never `up`.
+#   vllm            optional (profile "vllm"): vLLM on this machine's NVIDIA GPU.
+#                   Without the profile the agent talks to VLLM_BASE_URL — a vLLM
+#                   on another machine, which is the usual case from a Mac.
+#
+# Quick path (GPU machine):
+#   docker compose --profile agent --profile vllm build  # the agent's image included
+#   docker compose --profile vllm up -d
+#   docker compose run --rm agent reference
+#   docker compose run --rm agent candidate
+#   docker compose run --rm agent compare
+#
+# Quick path (Mac, vLLM elsewhere):
+#   echo VLLM_BASE_URL=http://<gpu-host>:8000/v1 >> .env
+#   docker compose --profile agent build
+#   docker compose up -d
+#   … same three run commands
+#
+# Everything configurable lives in .env (see .env.example).
+
+name: trustvian-vllm-quickstart
+
+services:
+  control-plane:
+    build:
+      context: .
+      target: control-plane
+      args:
+        TRUSTVIAN_REF: ${TRUSTVIAN_REF:-v0.10.0}
+    volumes:
+      # Named, so `docker compose down` keeps runs and baselines and only
+      # `docker compose down -v` discards them.
+      - trustvian-state:/var/lib/trustvian
+    ports:
+      # Host loopback only: the runtime is unauthenticated.
+      - "127.0.0.1:${TRUSTVIAN_WEB_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:18080/v1/projects?limit=1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    restart: unless-stopped
+
+  crm:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+      - ./mock_services.py:/app/mock_services.py:ro
+    environment:
+      CRM_BIND: 0.0.0.0
+      CRM_PORT: "8081"
+    command: ["python", "-u", "mock_services.py"]
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/customers/c-1001', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  agent:
+    build:
+      context: .
+      target: agent
+      args:
+        TRUSTVIAN_REF: ${TRUSTVIAN_REF:-v0.10.0}
+        # The Collector is the official release image, pinned by digest;
+        # the Dockerfile copies its binary in beside the CLI.
+        TRUSTVIAN_COLLECTOR_IMAGE: ${TRUSTVIAN_COLLECTOR_IMAGE:-ghcr.io/trustvian/trustvian-collector:v0.10.0@sha256:192b28541fe2441a72d047b3cb72ac93bba0bccf64a140bab4b0673869c9f5ba}
+    # Not started by `docker compose up`; only by `docker compose run agent …`.
+    profiles: ["agent"]
+    volumes:
+      # The workload is mounted, not baked in: edit agent.py or tools.py and
+      # re-run. Read-only, because `trustvian dev` never writes to the
+      # workload's directory and neither should anything else here.
+      - .:/app:ro
+      # dev's own state (generated Collector config, logs, the learned
+      # baseline per candidate).
+      - agent-state:/root/.trustvian
+    environment:
+      TRUSTVIAN_API_URL: http://control-plane:8080
+      TRUSTVIAN_PROJECT: ${TRUSTVIAN_PROJECT:-trustvian-vllm-quickstart}
+      TRUSTVIAN_AGENT: ${TRUSTVIAN_AGENT:-support-agent}
+      TRUSTVIAN_WEB_URL: http://127.0.0.1:${TRUSTVIAN_WEB_PORT:-8080}/
+      CRM_URL: http://crm:8081
+      # Where the model is. The default is the in-Compose vLLM (profile
+      # "vllm"); from a Mac, point it at a GPU machine in .env.
+      VLLM_BASE_URL: ${VLLM_BASE_URL:-http://vllm:8000/v1}
+      VLLM_API_KEY: ${VLLM_API_KEY:-EMPTY}
+      # Must equal vLLM's --served-model-name (or the HF id without that flag).
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5-7b}
+      VLLM_READY_SECONDS: ${VLLM_READY_SECONDS:-300}
+      # Content-free spans: prompts and completions stay out of telemetry.
+      OPENINFERENCE_HIDE_INPUTS: "true"
+      OPENINFERENCE_HIDE_OUTPUTS: "true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      control-plane:
+        condition: service_healthy
+      crm:
+        condition: service_healthy
+      vllm:
+        condition: service_started
+        required: false
+    restart: "no"
+
+  vllm:
+    profiles: ["vllm"]
+    image: vllm/vllm-openai:latest
+    # The flags that matter for this quick start:
+    #   --enable-auto-tool-choice --tool-call-parser   required for tool_choice=auto
+    #   --served-model-name                            what the agent sends as `model`
+    #                                                  and what Trustvian shows as `llm · …`
+    # The parser follows the model family: hermes for Qwen 2.5/3, llama3_json
+    # for Llama 3.x, mistral for Mistral.
+    command: >-
+      --model ${VLLM_MODEL:-Qwen/Qwen2.5-7B-Instruct}
+      --served-model-name ${LLM_MODEL:-qwen2.5-7b}
+      --enable-auto-tool-choice --tool-call-parser ${VLLM_TOOL_PARSER:-hermes}
+      --max-model-len ${VLLM_MAX_MODEL_LEN:-8192}
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  trustvian-state:
+  agent-state:
+  hf-cache:
