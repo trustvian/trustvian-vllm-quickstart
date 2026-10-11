@@ -50,6 +50,18 @@ def traced_tool(tracer, name, fn):
     return wrapper
 
 
+def instrument(provider: TracerProvider) -> None:
+    """The instrumentors and the TOOL spans, on `provider`. The tests call this with an in-memory exporter."""
+    OpenAIInstrumentor().instrument(tracer_provider=provider)
+    RequestsInstrumentor().instrument(tracer_provider=provider)
+
+    import tools  # the same module object agent.py will import
+
+    tracer = provider.get_tracer("quickstart.harness")
+    for name, fn in list(tools.REGISTRY.items()):
+        tools.REGISTRY[name] = traced_tool(tracer, name, fn)
+
+
 def main() -> None:
     endpoint = os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") or os.environ.get(
         "OTEL_EXPORTER_OTLP_ENDPOINT"
@@ -69,17 +81,10 @@ def main() -> None:
     trace.set_tracer_provider(provider)
     atexit.register(provider.shutdown)  # flush before the process exits
 
-    OpenAIInstrumentor().instrument(tracer_provider=provider)
-    RequestsInstrumentor().instrument(tracer_provider=provider)
-
     here = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, here)
 
-    import tools  # the same module object agent.py will import
-
-    tracer = provider.get_tracer("quickstart.harness")
-    for name, fn in list(tools.REGISTRY.items()):
-        tools.REGISTRY[name] = traced_tool(tracer, name, fn)
+    instrument(provider)
 
     runpy.run_path(os.path.join(here, "agent.py"), run_name="__main__")
 
