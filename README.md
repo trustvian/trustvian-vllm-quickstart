@@ -74,6 +74,9 @@ mock_services.py     fake CRM on 127.0.0.1:8081 (standard library, no dependenci
 tools.py             tool functions + JSON schemas — imports NEITHER OTel NOR Trustvian
 agent.py             the tool-calling loop on vLLM — imports NEITHER OTel NOR Trustvian
 run.py               instrumentation harness; runs agent.py unchanged
+live.py              live mode (step 7): starts and supervises three agents
+roles.py             live mode's roles, tickets and per-worker loop
+tests/               live mode and content checks; no model needed
 ```
 
 `agent.py` and `tools.py` are your application. `run.py` stands in for the
@@ -169,6 +172,110 @@ that are its evidence.
   (`--otlp-traces-endpoint`), but the server is a separate process with its
   own `service.name`; it would show up as a second actor, not as part of this
   agent. Leave it off for this exercise.
+
+## 7. Live mode: a fleet that keeps working
+
+Steps 3–5 are runs that end. Live mode is one that does not: three agents,
+each its own process and its own actor, work a ticket every few seconds until
+you stop them, so the live view fills continuously.
+
+| Actor (`service.name`) | Tools | Tickets (eight each, e.g.) |
+|---|---|---|
+| `support-agent` | `lookup_customer`, `send_reply` | "How do I reset my password?" |
+| `billing-agent` | `lookup_customer`, `lookup_invoice`, `issue_refund` | "I was charged twice this month." |
+| `accounts-agent` | `lookup_customer`, `change_plan` | "Please upgrade me to Pro." |
+
+`live.py` starts one worker per role, each `python run.py` with
+`OTEL_SERVICE_NAME=<role>-agent` and `LIVE_ROLE=<role>`; `agent.py` sees
+`LIVE_ROLE` and works that role's tickets with the same tool-calling loop. Two things
+happen on purpose, and rarely:
+
+- **Drift.** Every 20th billing ticket also binds `export_customer` and asks
+  for an export: a new behavior on an actor Trustvian has already learned.
+- **Failed calls.** The fake CRM answers about 5% of requests with `503`
+  (`429` for refunds). The tool returns a short failure to the model, which
+  usually tries again.
+
+With the CRM from step 2 running (Terminal A) and step 3's exports
+(`VLLM_BASE_URL`, `LLM_MODEL` and the two `OPENINFERENCE_HIDE_*`):
+
+```bash
+trustvian dev --instrumentation existing \
+  --agent support-fleet --candidate live \
+  -- python live.py
+```
+
+`live.py` prints one line per ticket, never its text:
+
+```text
+live: 3 agents (support-agent, billing-agent, accounts-agent), one ticket each every ~10 s, until stopped (Ctrl-C)
+accounts-agent  ticket 1    tools: lookup_customer, change_plan  (4.1 s)
+billing-agent   ticket 20   tools: lookup_customer, lookup_invoice, issue_refund, export_customer  (6.6 s)  [drift]
+support-agent   ticket 4    tools: lookup_customer, send_reply, send_reply  (6.4 s)
+```
+
+Stop it with **Ctrl-C**: `live.py` stops every worker (SIGTERM, SIGKILL after
+5 s), prints the tickets per agent and exits 0, and dev prints `Run
+dev-live-… complete.`
+
+What a 5½-minute run showed (Trustvian v0.10.0, `qwen2.5:3b` served by
+Ollama's OpenAI-compatible endpoint — `VLLM_BASE_URL=http://localhost:11434/v1`,
+no GPU at hand — on an Apple M3 Pro laptop, `OLLAMA_NUM_PARALLEL=1`):
+
+- **One agent in the live view, three actors in the evidence.** The live
+  view's Agent, its Behavior flow and every Live stream row name the run's
+  agent, `support-fleet`. Which worker did what is in each observation's
+  `actor_id` (`support-agent`, `billing-agent`, `accounts-agent`), which
+  `GET /v1/evaluation-runs/<run>/observations` returns. `support-agent` is
+  also the `--agent` of steps 3–5; it is a different run and candidate.
+- **A steady stream.** 76 tickets (26, 24 and 26), about 550 observations;
+  a ticket took 3–3.5 s at the median and 7.3 s at most, so the 10 s interval
+  keeps up even with the three workers queueing on one model.
+- **9 behaviors.** `external/qwen2.5:3b → openai`, `http/GET` and
+  `http/POST → 127.0.0.1`, and six tools, each under the actor whose role has
+  it: `lookup_customer`, `send_reply`, `lookup_invoice`, `issue_refund`,
+  `change_plan`, and the drift's `export_customer`.
+- **The drift** appeared once, at billing ticket 20, about four and a half
+  minutes in: `tool/export_customer`, NEW.
+- **Failed calls:** 11 HTTP observations with an error status, each the
+  `503` or `429` of one CRM request; the run went on.
+
+The knobs, all environment variables:
+
+| Variable | Default | |
+|---|---|---|
+| `LIVE_AGENTS` | `support,billing,accounts` | the roles to run |
+| `LIVE_INTERVAL_SECONDS` | `10` | one ticket per agent this often, ±50% jitter |
+| `LIVE_DRIFT_EVERY` | `20` | every Nth billing ticket also exports; `0` = never |
+| `LIVE_MAX_TICKETS` | `0` | tickets per agent, then stop; `0` = until stopped |
+| `CRM_ERROR_RATE` | `0.05` | share of CRM requests that fail; `0` = none. Read by `mock_services.py`, so set it in Terminal A |
+
+The three workers share one model server. vLLM batches concurrent requests
+by itself; Ollama serves `OLLAMA_NUM_PARALLEL` at a time and queues the
+rest — at `1`, as measured above, a ticket waits for the other agents' model
+calls, which is what the median includes. A slower model needs a longer
+`LIVE_INTERVAL_SECONDS`.
+
+With Docker Compose, live mode is a service of its own, attached to the
+stack's control plane:
+
+```bash
+docker compose --profile live up -d       # add --profile vllm on the GPU machine
+# open http://127.0.0.1:8080/
+docker compose logs -f live               # the per-ticket lines
+docker compose --profile live down        # stops it; dev completes the run
+```
+
+`down` keeps the volumes, so the next `up` is scored against what this one
+taught; `down -v` forgets it. The knobs go in `.env`; `TRUSTVIAN_LIVE_AGENT`
+renames `support-fleet`. The `agent` service and its subcommands are
+unchanged. The tests cover `live.py`, every role's tool calls and that no
+ticket text, reply or tool argument reaches a span; they need no model:
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
 
 ## Running it with Docker Compose
 
