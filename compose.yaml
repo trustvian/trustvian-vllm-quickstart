@@ -5,6 +5,8 @@
 #   crm             the fake CRM (mock_services.py)
 #   agent           one-shot: `trustvian dev` + the tool-calling agent, attached
 #                   to control-plane with --api-url. Used with `run`, never `up`.
+#   live            long-running: `trustvian dev` + live.py, three agents that
+#                   keep working until stopped. Only with `--profile live`.
 #   vllm            optional (profile "vllm"): vLLM on this machine's NVIDIA GPU.
 #                   Without the profile the agent talks to VLLM_BASE_URL — a vLLM
 #                   on another machine, which is the usual case from a Mac.
@@ -21,6 +23,10 @@
 #   docker compose --profile agent build
 #   docker compose up -d
 #   … same three run commands
+#
+# Live mode:
+#   docker compose --profile live up -d   # then open http://127.0.0.1:8080/
+#   docker compose --profile live down    # stops it; runs and baselines are kept
 #
 # Everything configurable lives in .env (see .env.example).
 
@@ -56,6 +62,9 @@ services:
     environment:
       CRM_BIND: 0.0.0.0
       CRM_PORT: "8081"
+      # The share of requests answered 503 (429 for refunds): live mode's
+      # occasional failed call. 0 turns it off.
+      CRM_ERROR_RATE: ${CRM_ERROR_RATE:-0.05}
     command: ["python", "-u", "mock_services.py"]
     healthcheck:
       test: ["CMD", "python", "-c",
@@ -112,6 +121,34 @@ services:
         required: false
     restart: "no"
 
+  live:
+    # The agent service's image, mounts and environment, as a long-running
+    # service: `trustvian dev … -- python live.py`, attached to control-plane
+    # with --api-url. Started only with `--profile live`; the one-shot agent
+    # service is unchanged.
+    extends:
+      service: agent
+    profiles: !override ["live"]
+    command: ["live"]
+    volumes:
+      # dev's state of its own, so the one-shot agent's housekeeping (it
+      # clears stale baseline locks) never touches the live run's.
+      - live-state:/root/.trustvian
+    environment:
+      # dev's --agent. Each worker reports as its own actor
+      # (support-agent, billing-agent, accounts-agent) through
+      # OTEL_SERVICE_NAME, which live.py sets per worker.
+      TRUSTVIAN_AGENT: ${TRUSTVIAN_LIVE_AGENT:-support-fleet}
+      LIVE_AGENTS: ${LIVE_AGENTS:-support,billing,accounts}
+      LIVE_INTERVAL_SECONDS: ${LIVE_INTERVAL_SECONDS:-10}
+      LIVE_DRIFT_EVERY: ${LIVE_DRIFT_EVERY:-20}
+      LIVE_MAX_TICKETS: ${LIVE_MAX_TICKETS:-0}
+      PYTHONUNBUFFERED: "1"
+    # `down` sends SIGTERM to dev, which stops live.py (and live.py its
+    # workers, SIGKILL after 5 s) and completes the run.
+    stop_grace_period: 30s
+    restart: unless-stopped
+
   vllm:
     profiles: ["vllm"]
     image: vllm/vllm-openai:latest
@@ -149,4 +186,5 @@ services:
 volumes:
   trustvian-state:
   agent-state:
+  live-state:
   hf-cache:
