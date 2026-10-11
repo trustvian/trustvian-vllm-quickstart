@@ -5,6 +5,7 @@
 #   reference            run the reference agent under `trustvian dev`
 #   candidate            run the candidate agent (AGENT_VARIANT=candidate)
 #   compare [REF CAND]   gate the last two runs (or the two ids given)
+#   live                 live mode: live.py's agents, until stopped
 #   trustvian ARGS...    any trustvian CLI command, --api-url already set
 #   shell                a bash shell in the container
 #
@@ -22,7 +23,7 @@ WEB_HINT="${TRUSTVIAN_WEB_URL:-http://127.0.0.1:8080/}"
 mkdir -p "$STATE_DIR"
 
 usage() {
-    sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,10p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
 }
 
@@ -110,6 +111,14 @@ case "${1:-help}" in
         wait_for_model
         export AGENT_VARIANT=candidate
         run cand python run.py "$@"
+        ;;
+    live)
+        shift
+        wait_for_control_plane
+        wait_for_model
+        # One run for as long as the service is up; docker compose stop/down
+        # sends dev SIGTERM, which ends live.py and completes the run.
+        run live python live.py "$@"
         ;;
     compare)
         ref="${2:-$(last ref reference)}"
