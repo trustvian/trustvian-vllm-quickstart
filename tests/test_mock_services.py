@@ -52,6 +52,15 @@ def test_refunds_and_plans():
     assert request("POST", "/plans", {"customer_id": "c-1002", "plan": "gold"})[0] == 400
 
 
+def test_every_customer_a_ticket_names_exists():
+    import roles
+
+    for spec in roles.ROLES.values():
+        for customer_id, _ in spec["tickets"]:
+            assert customer_id in mock_services.CUSTOMERS
+            assert customer_id in mock_services.INVOICES
+
+
 def test_error_rate_one_fails_every_call_429_for_refunds(error_rate):
     error_rate(1.0)
     assert request("GET", "/customers/c-1001")[0] == 503

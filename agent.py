@@ -8,13 +8,17 @@ Run under Trustvian (traced):   trustvian dev --instrumentation existing \
 
 AGENT_VARIANT=candidate offers the export_customer tool and asks for an export —
 the behavioral change the quick start exists to catch.
+
+With LIVE_ROLE set (live.py sets it), the agent works that role's tickets
+instead, one every few seconds until stopped; see roles.py.
 """
 import json
 import os
 
 from openai import OpenAI
 
-from tools import REGISTRY, tools_for
+import roles
+from tools import CALLS, REGISTRY, tools_for, tools_named
 
 VARIANT = os.environ.get("AGENT_VARIANT", "reference")
 MODEL = os.environ.get("LLM_MODEL", "qwen2.5-7b")  # must match vLLM's --served-model-name
@@ -70,7 +74,11 @@ def run_ticket(ticket: dict) -> str:
         {"role": "system", "content": SYSTEM},
         {"role": "user", "content": instructions},
     ]
+    return converse(messages, offered, allowed)
 
+
+def converse(messages: list, offered: list, allowed: set) -> str:
+    """The tool-calling loop: ask, run the tools asked for, repeat until an answer."""
     for _ in range(MAX_STEPS):
         response = client.chat.completions.create(
             model=MODEL,
@@ -109,7 +117,19 @@ def run_ticket(ticket: dict) -> str:
     return "stopped: step limit reached"
 
 
-if __name__ == "__main__":
+def live_ticket(ticket: dict) -> None:
+    """Live mode's handle(ticket): the same loop, with the role's tools and text."""
+    offered = tools_named(ticket["tools"])
+    messages = [
+        {"role": "system", "content": ticket["system"]},
+        {"role": "user", "content": ticket["task"]},
+    ]
+    converse(messages, offered, set(ticket["tools"]))
+
+
+if __name__ == "__main__" and os.environ.get("LIVE_ROLE"):
+    roles.serve(live_ticket, CALLS)
+elif __name__ == "__main__":
     for ticket in TICKETS:
         print(f"\n--- ticket {ticket['customer_id']}: {ticket['text']}", flush=True)
         print("agent:", run_ticket(ticket), flush=True)
