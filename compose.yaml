@@ -5,8 +5,9 @@
 #   crm             the fake CRM (mock_services.py)
 #   agent           one-shot: `trustvian dev` + the tool-calling agent, attached
 #                   to control-plane with --api-url. Used with `run`, never `up`.
-#   live            long-running: `trustvian dev` + live.py, three agents that
-#                   keep working until stopped. Only with `--profile live`.
+#   live            long-running: live.py, three agents that keep working
+#                   until stopped, each its own `trustvian dev` run attached to
+#                   control-plane. Only with `--profile live`.
 #   vllm            optional (profile "vllm"): vLLM on this machine's NVIDIA GPU.
 #                   Without the profile the agent talks to VLLM_BASE_URL — a vLLM
 #                   on another machine, which is the usual case from a Mac.
@@ -123,29 +124,29 @@ services:
 
   live:
     # The agent service's image, mounts and environment, as a long-running
-    # service: `trustvian dev … -- python live.py`, attached to control-plane
-    # with --api-url. Started only with `--profile live`; the one-shot agent
-    # service is unchanged.
+    # service: `python live.py`, which starts one `trustvian dev` per role
+    # (three dev processes and three Collectors in this one container), each
+    # attached to control-plane with TRUSTVIAN_API_URL. Started only with
+    # `--profile live`; the one-shot agent service is unchanged.
     extends:
       service: agent
     profiles: !override ["live"]
     command: ["live"]
     volumes:
       # dev's state of its own, so the one-shot agent's housekeeping (it
-      # clears stale baseline locks) never touches the live run's.
+      # clears stale baseline locks) never touches the live runs'.
       - live-state:/root/.trustvian
     environment:
-      # dev's --agent. Each worker reports as its own actor
-      # (support-agent, billing-agent, accounts-agent) through
-      # OTEL_SERVICE_NAME, which live.py sets per worker.
-      TRUSTVIAN_AGENT: ${TRUSTVIAN_LIVE_AGENT:-support-fleet}
+      # Inherited from agent: TRUSTVIAN_API_URL (the control plane every
+      # dev attaches to) and TRUSTVIAN_PROJECT. Each dev's --agent is
+      # <role>-agent.
       LIVE_AGENTS: ${LIVE_AGENTS:-support,billing,accounts}
       LIVE_INTERVAL_SECONDS: ${LIVE_INTERVAL_SECONDS:-10}
       LIVE_DRIFT_EVERY: ${LIVE_DRIFT_EVERY:-20}
       LIVE_MAX_TICKETS: ${LIVE_MAX_TICKETS:-0}
       PYTHONUNBUFFERED: "1"
-    # `down` sends SIGTERM to dev, which stops live.py (and live.py its
-    # workers, SIGKILL after 5 s) and completes the run.
+    # `down` sends live.py SIGTERM; it sends every dev SIGINT, so each
+    # completes its run, and kills what is left after 20 s.
     stop_grace_period: 30s
     restart: unless-stopped
 
