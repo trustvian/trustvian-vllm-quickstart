@@ -5,7 +5,7 @@
 #   reference            run the reference agent under `trustvian dev`
 #   candidate            run the candidate agent (AGENT_VARIANT=candidate)
 #   compare [REF CAND]   gate the last two runs (or the two ids given)
-#   live                 live mode: live.py's agents, until stopped
+#   live                 live mode: one dev per live.py agent, until stopped
 #   trustvian ARGS...    any trustvian CLI command, --api-url already set
 #   shell                a bash shell in the container
 #
@@ -116,9 +116,13 @@ case "${1:-help}" in
         shift
         wait_for_control_plane
         wait_for_model
-        # One run for as long as the service is up; docker compose stop/down
-        # sends dev SIGTERM, which ends live.py and completes the run.
-        run live python live.py "$@"
+        clear_stale_baseline_locks
+        echo "agent: live view on the host: $WEB_HINT"
+        # live.py starts one `trustvian dev` per role, each its own run on
+        # $TRUSTVIAN_API_URL, for as long as the service is up. docker
+        # compose stop/down sends live.py SIGTERM; it stops every dev, and
+        # each completes its run.
+        exec python live.py "$@"
         ;;
     compare)
         ref="${2:-$(last ref reference)}"
