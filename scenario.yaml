@@ -1,0 +1,54 @@
+# Steps 3–5 as one scenario: N reference runs, N candidate runs, one gate.
+#
+#   trustvian eval run --scenario scenario.yaml
+#
+# Every field below is one the scenario format of Trustvian v0.12.0 accepts;
+# it refuses unknown fields, and `runs` and every gate limit are required.
+# The gate is step 5's (no added behavior, no block decision, no critical-risk
+# observation), counted over repetitions: a behavior is "added" when it is
+# present in at least k candidate runs and at most j reference runs.
+version: v1
+name: support-agent-export
+runs: 3
+# Passed to every `trustvian dev` repetition, as on the command line in steps
+# 3 and 4. Named rather than derived, so the scenario also runs where there is
+# no git checkout (the Compose agent container).
+instrumentation: existing
+project: trustvian-vllm-quickstart
+agent: support-agent
+# Each side declares the variable agent.py reads its model from, so the
+# comparison's sameness records the model (the served model name, as in
+# `model qwen2.5-7b`). An unset variable declares nothing and reads
+# not_recorded: export LLM_MODEL (step 3), or keep Compose's, which sets it.
+# No `inputs:`: the tickets are in agent.py.
+reference:
+  candidate: ref
+  model_env: LLM_MODEL
+  command: [python, run.py]
+  env:
+    AGENT_VARIANT: reference
+candidate:
+  candidate: cand
+  model_env: LLM_MODEL
+  command: [python, run.py]
+  env:
+    AGENT_VARIANT: candidate
+gate:
+  added_candidate_presence_minimum: 1        # k: the documented guidance
+  added_reference_presence_maximum: 0        # j
+  max_repeated_added_behaviors: 0
+  max_block_decisions_per_run: 0
+  max_critical_risk_observations_per_run: 0
+  # Frequency limits, at values the unchanged agent passes: three executions
+  # of the reference agent against itself (qwen2.5:3b through Ollama's
+  # OpenAI-compatible endpoint, runs: 3, Trustvian v0.12.0) lost no behavior,
+  # and every reference behavior was in 3 of 3 candidate runs.
+  min_candidate_frequency: 3                 # in every candidate run
+  max_lost_behaviors: 0
+  # Model calls: the OpenAI instrumentor names each one (an LLM span), so
+  # every run has the model-layer evidence this check needs. The same three
+  # executions made 5 or 6 a run. 16 is agent.py's own ceiling, two tickets of
+  # at most MAX_STEPS = 8 model calls; more means the loop changed. No
+  # max_calls_per_run: a per-target limit would be a second guess at the same
+  # loop.
+  max_llm_calls_per_run: 16
