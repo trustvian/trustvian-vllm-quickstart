@@ -16,12 +16,12 @@
 # Nothing here is pushed anywhere; everything except the collector is built
 # locally by `docker compose build`.
 
-# The released Collector: ghcr.io/trustvian/trustvian-collector, v0.10.0,
+# The released Collector: ghcr.io/trustvian/trustvian-collector, v0.12.0,
 # pinned by the digest of its multi-arch index (Docker picks the amd64 or
 # arm64 image from it). The tag is informational; the digest is what is
 # pulled. Verify it with cosign as in Trustvian's docs/supply-chain.md.
 # Declared before the first FROM so a FROM can use it.
-ARG TRUSTVIAN_COLLECTOR_IMAGE=ghcr.io/trustvian/trustvian-collector:v0.10.0@sha256:192b28541fe2441a72d047b3cb72ac93bba0bccf64a140bab4b0673869c9f5ba
+ARG TRUSTVIAN_COLLECTOR_IMAGE=ghcr.io/trustvian/trustvian-collector:v0.12.0@sha256:65bb1b61d35b57b0a1efb9d237f71d0cc02e7b41d1cd30d4a58023c7d0a022f0
 
 # ---------------------------------------------------------------------
 # Stage 0: the Collector, from the release image (distroless, static).
@@ -45,7 +45,7 @@ RUN apk add --no-cache git
 
 ARG TRUSTVIAN_REPO=https://github.com/trustvian/trustvian.git
 # A branch, a tag or a full commit SHA. Pin a SHA for a reproducible image.
-ARG TRUSTVIAN_REF=v0.10.0
+ARG TRUSTVIAN_REF=v0.12.0
 
 WORKDIR /src
 # fetch-by-ref rather than clone --branch, so a commit SHA works as well as
